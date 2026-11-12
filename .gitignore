@@ -1,0 +1,8 @@
+# Fichiers compilés
+out/
+
+# Réglages locaux (contient le mot de passe de la base)
+config.properties
+
+# Bibliothèques téléchargées (JavaFX, MySQL, JSON)
+lib/
