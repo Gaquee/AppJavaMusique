@@ -3,18 +3,24 @@ public class Morceau {
     final String titre;
     final String artiste;
     final String album;
+    final String genre;   // étiquette Jamendo (voir Catalogue.GENRES), vide si inconnu
     final int duree;      // en secondes (0 si inconnue)
     final String url;     // flux audio
     final String image;   // pochette
 
-    public Morceau(String id, String titre, String artiste, String album, int duree, String url, String image) {
+    public Morceau(String id, String titre, String artiste, String album, String genre, int duree, String url, String image) {
         this.id = id;
         this.titre = titre;
         this.artiste = artiste;
         this.album = album;
+        this.genre = genre == null ? "" : genre;
         this.duree = duree;
         this.url = url;
         this.image = image;
+    }
+
+    Morceau avecGenre(String nouveauGenre) {
+        return new Morceau(id, titre, artiste, album, nouveauGenre, duree, url, image);
     }
 
     static String formaterDuree(double secondes) {

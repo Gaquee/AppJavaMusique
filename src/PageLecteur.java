@@ -6,16 +6,22 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.EnumMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.prefs.Preferences;
 
-// Écran principal : recherche, favoris et barre de lecture.
+// Écran principal : catalogue, favoris, artistes, gestion (admin) et barre de lecture.
+// Les onglets affichés sont ceux du menu de l'utilisateur connecté (Utilisateur.menu()).
 final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
     private static final int POCHETTE = 46;
+    private static final String[] FILTRES_ARTISTES = { "Tous", "Favoris", "Abonnements" };
 
     private final Preferences prefs;
     private final Lecteur lecteur = new Lecteur(this);
@@ -23,13 +29,21 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
 
     // En-tête
     private final JLabel titrePage = Theme.label("Bonjour", 16, true, Theme.TEXTE);
+    private final JLabel rolePage = Theme.label("", 11, false, Theme.TEXTE_2);
     private final ChampArrondi recherche = new ChampArrondi(10, 12);
-    private final BoutonOnglet ongletDecouvrir = new BoutonOnglet("Découvrir");
-    private final BoutonOnglet ongletFavoris = new BoutonOnglet("Favoris");
+    private final JPanel onglets = new JPanel();
+    private final Map<Onglet, BoutonOnglet> boutonsOnglets = new EnumMap<>(Onglet.class);
+    private final CardLayout cartesFiltres = new CardLayout();
+    private final JPanel zoneFiltres = new JPanel(cartesFiltres);
+    private final Map<String, BoutonOnglet> pucesGenres = new LinkedHashMap<>();       // clé "" = tous
+    private final Map<String, BoutonOnglet> pucesGenreAjout = new LinkedHashMap<>();
+    private final List<BoutonOnglet> pucesArtistes = new ArrayList<>();
 
-    // Liste
+    // Listes
     private final DefaultListModel<Morceau> modele = new DefaultListModel<>();
-    private final ListeMorceaux liste = new ListeMorceaux(modele);
+    private final ListeLarge<Morceau> liste = new ListeLarge<>(modele, RenduMorceau.HAUTEUR);
+    private final DefaultListModel<String> modeleArtistes = new DefaultListModel<>();
+    private final ListeLarge<String> listeArtistes = new ListeLarge<>(modeleArtistes, RenduArtiste.HAUTEUR);
     private final JLabel message = Theme.label("", 12, false, Theme.TEXTE_2);
     private final CardLayout cartesCentre = new CardLayout();
     private final JPanel centre = new JPanel(cartesCentre);
@@ -47,20 +61,41 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
     private final BoutonIcone boutonRepeter = new BoutonIcone(BoutonIcone.Type.REPETER, 30, false, "Répéter la liste");
     private final Curseur volume = new Curseur();
 
-    // État
+    // Session
     private Utilisateur utilisateur;
-    private boolean surFavoris;
-    private List<Morceau> resultats = List.of();          // contenu de l'onglet Découvrir
-    private String messageResultats = "";
+    private boolean avecFavoris;                          // le menu de l'utilisateur contient les favoris
+    private Onglet onglet = Onglet.CATALOGUE;
+
+    // Catalogue
+    private Catalogue catalogue;                          // null tant qu'il n'est pas chargé
+    private String messageCatalogue = "";
+    private String genreFiltre = "";                      // "" = tous les genres
+    private Map<String, Integer> titresParArtiste = Map.of();
+    private int filtreArtistes;                           // indice dans FILTRES_ARTISTES
+
+    // Favoris et abonnements (auditeur)
     private final List<Morceau> favoris = new ArrayList<>();
     private final Set<String> idsFavoris = new HashSet<>();
+    private final Set<String> artistesFavoris = new HashSet<>();
+    private final Set<String> abonnements = new HashSet<>();
     private boolean favorisDisponibles = true;
+
+    // Gestion du catalogue (admin)
+    private List<Morceau> resultats = List.of();          // résultats de la recherche Jamendo
+    private String messageResultats = "";
+    private String genreAjout = Catalogue.GENRES.keySet().iterator().next();
+    private String idAConfirmer;                          // morceau dont la suppression attend un second clic
+    private int numeroRecherche;                          // pour ignorer les réponses périmées
+
+    // Lecture
     private List<Morceau> file = List.of();               // liste en cours de lecture
     private int indexFile = -1;
     private Morceau enCours;
     private double dureeEnCours;
     private boolean aRelancer;                            // lecteur libéré (fin de liste, erreur) : « lecture » relance le morceau
-    private int numeroRecherche;                          // pour ignorer les réponses périmées
+
+    // Données propres à l'auditeur, chargées en une fois à la connexion
+    private record DonneesAuditeur(List<Morceau> favoris, Set<String> artistesFavoris, Set<String> abonnements) { }
 
     PageLecteur(Preferences prefs, Runnable surDeconnexion) {
         super(new BorderLayout(0, 10));
@@ -83,52 +118,99 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
     // ------------------------------------------------------------------ construction
 
     private JComponent construireHaut(Runnable surDeconnexion) {
+        JPanel identite = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        identite.setOpaque(false);
+        rolePage.setBorder(BorderFactory.createEmptyBorder(4, 8, 0, 0));
+        identite.add(titrePage);
+        identite.add(rolePage);
+
         JPanel entete = new JPanel(new BorderLayout());
         entete.setOpaque(false);
         BoutonLien deconnexion = new BoutonLien("Déconnexion", Theme.TEXTE_2);
         deconnexion.addActionListener(e -> surDeconnexion.run());
-        entete.add(titrePage, BorderLayout.WEST);
+        entete.add(identite, BorderLayout.WEST);
         entete.add(deconnexion, BorderLayout.EAST);
 
         recherche.setPreferredSize(new Dimension(10, 36));
         recherche.addActionListener(e -> {
-            if (!surFavoris) chercher(recherche.getText().trim());
+            if (onglet == Onglet.GESTION) chercherSurJamendo(recherche.getText().trim());
         });
-        recherche.getDocument().addDocumentListener(new DocumentListener() {   // filtre instantané des favoris
-            @Override public void insertUpdate(DocumentEvent e)  { if (surFavoris) rafraichirListe(); }
-            @Override public void removeUpdate(DocumentEvent e)  { if (surFavoris) rafraichirListe(); }
+        recherche.getDocument().addDocumentListener(new DocumentListener() {   // filtre instantané
+            @Override public void insertUpdate(DocumentEvent e)  { filtrer(); }
+            @Override public void removeUpdate(DocumentEvent e)  { filtrer(); }
             @Override public void changedUpdate(DocumentEvent e) { }
+            private void filtrer() { if (onglet != Onglet.GESTION) rafraichirListe(); }
         });
 
-        JPanel onglets = new JPanel(new GridLayout(1, 2, 8, 0));
         onglets.setOpaque(false);
         onglets.setPreferredSize(new Dimension(10, 30));
-        onglets.add(ongletDecouvrir);
-        onglets.add(ongletFavoris);
-        ongletDecouvrir.addActionListener(e -> choisirOnglet(false));
-        ongletFavoris.addActionListener(e -> choisirOnglet(true));
+        onglets.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+
+        // Filtres sous les onglets : genres du catalogue, genre d'ajout (admin), type d'artistes
+        JPanel genres = grille(2, 5);
+        pucesGenres.put("", puce("Tous", () -> choisirGenre("")));
+        Catalogue.GENRES.forEach((g, nom) -> pucesGenres.put(g, puce(nom, () -> choisirGenre(g))));
+        pucesGenres.values().forEach(genres::add);
+
+        JPanel genresAjout = grille(2, 4);
+        Catalogue.GENRES.forEach((g, nom) -> pucesGenreAjout.put(g, puce(nom, () -> choisirGenreAjout(g))));
+        pucesGenreAjout.values().forEach(genresAjout::add);
+
+        JPanel artistes = grille(1, 3);
+        for (int i = 0; i < FILTRES_ARTISTES.length; i++) {
+            int indice = i;
+            pucesArtistes.add(puce(FILTRES_ARTISTES[i], () -> choisirFiltreArtistes(indice)));
+        }
+        pucesArtistes.forEach(artistes::add);
+
+        zoneFiltres.setOpaque(false);
+        zoneFiltres.add(genres, "GENRES");
+        zoneFiltres.add(genresAjout, "AJOUT");
+        zoneFiltres.add(artistes, "ARTISTES");
+
+        JPanel bas = new JPanel();
+        bas.setLayout(new BoxLayout(bas, BoxLayout.Y_AXIS));
+        bas.setOpaque(false);
+        bas.add(onglets);
+        bas.add(Box.createVerticalStrut(8));
+        bas.add(zoneFiltres);
 
         JPanel haut = new JPanel(new BorderLayout(0, 10));
         haut.setOpaque(false);
         haut.add(entete, BorderLayout.NORTH);
         haut.add(recherche, BorderLayout.CENTER);
-        haut.add(onglets, BorderLayout.SOUTH);
+        haut.add(bas, BorderLayout.SOUTH);
         return haut;
     }
 
+    private static JPanel grille(int lignes, int colonnes) {
+        JPanel p = new JPanel(new GridLayout(lignes, colonnes, 6, 6));
+        p.setOpaque(false);
+        return p;
+    }
+
+    private static BoutonOnglet puce(String texte, Runnable action) {
+        BoutonOnglet b = new BoutonOnglet(texte);
+        b.setFont(Theme.police(11, true));
+        b.addActionListener(e -> action.run());
+        return b;
+    }
+
     private JComponent construireCentre() {
-        liste.setCellRenderer(new RenduMorceau(
-            m -> idsFavoris.contains(m.id),
-            m -> enCours != null && enCours.id.equals(m.id)));
+        liste.setCellRenderer(new RenduMorceau(this::actionDe, m -> enCours != null && enCours.id.equals(m.id)));
         liste.addMouseListener(new MouseAdapter() {
             @Override public void mouseClicked(MouseEvent e) {
                 int index = liste.locationToIndex(e.getPoint());
                 if (index < 0 || !liste.getCellBounds(index, index).contains(e.getPoint())) return;
-                if (liste.surCoeur(e.getPoint())) {
-                    if (e.getClickCount() == 1) basculerFavori(modele.get(index));
-                } else if (e.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(e)) {
-                    jouerDepuisListe(index);
+                Morceau m = modele.get(index);
+                boolean surAction = liste.depuisLaDroite(e.getPoint()) <= RenduMorceau.ZONE_ACTION
+                                 && actionDe(m) != RenduMorceau.Action.AUCUNE;
+                if (surAction) {
+                    if (e.getClickCount() == 1) executerAction(m);
+                    return;
                 }
+                annulerConfirmation();
+                if (e.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(e)) jouerDepuisListe(index);
             }
         });
         liste.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "jouer");
@@ -138,14 +220,36 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
             }
         });
 
+        listeArtistes.setCellRenderer(new RenduArtiste(
+            a -> titresParArtiste.getOrDefault(a, 0), artistesFavoris::contains, abonnements::contains));
+        listeArtistes.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent e) {
+                int index = listeArtistes.locationToIndex(e.getPoint());
+                if (index < 0 || !listeArtistes.getCellBounds(index, index).contains(e.getPoint())) return;
+                String artiste = modeleArtistes.get(index);
+                int droite = listeArtistes.depuisLaDroite(e.getPoint());
+                if (droite <= RenduArtiste.ZONE_COEUR) {
+                    if (e.getClickCount() == 1) basculerArtiste(artiste, true);
+                } else if (droite <= RenduArtiste.ZONE_COEUR + RenduArtiste.ZONE_ABONNEMENT) {
+                    if (e.getClickCount() == 1) basculerArtiste(artiste, false);
+                } else if (e.getClickCount() == 2) {
+                    voirArtiste(artiste);
+                }
+            }
+        });
+
         JScrollPane scroll = new JScrollPane(liste);
         Theme.styliserScroll(scroll);
         scroll.getVerticalScrollBar().setUnitIncrement(16);
+        JScrollPane scrollArtistes = new JScrollPane(listeArtistes);
+        Theme.styliserScroll(scrollArtistes);
+        scrollArtistes.getVerticalScrollBar().setUnitIncrement(16);
 
         message.setHorizontalAlignment(SwingConstants.CENTER);
 
         centre.setOpaque(false);
         centre.add(scroll, "LISTE");
+        centre.add(scrollArtistes, "ARTISTES");
         centre.add(message, "MESSAGE");
 
         PanneauArrondi zone = new PanneauArrondi(new BorderLayout(), Theme.SURFACE, 12);
@@ -254,18 +358,57 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
     void ouvrir(Utilisateur u) {
         utilisateur = u;
         titrePage.setText("Bonjour " + u.login());
+        rolePage.setText(u.libelle());
+
+        // Polymorphisme : le menu dépend du type concret (Auditeur ou Admin), pas d'un test sur le rôle
+        List<Onglet> menu = u.menu();
+        avecFavoris = menu.contains(Onglet.FAVORIS);
+        boutonFavori.setVisible(avecFavoris);
+        onglets.removeAll();
+        boutonsOnglets.clear();
+        onglets.setLayout(new GridLayout(1, menu.size(), 8, 0));
+        for (Onglet o : menu) {
+            BoutonOnglet b = new BoutonOnglet(o.titre);
+            b.addActionListener(e -> choisirOnglet(o));
+            boutonsOnglets.put(o, b);
+            onglets.add(b);
+        }
+        onglets.revalidate();
+
         favoris.clear();
         idsFavoris.clear();
+        artistesFavoris.clear();
+        abonnements.clear();
         favorisDisponibles = true;
+        catalogue = null;
+        messageCatalogue = "Chargement du catalogue...";
         resultats = List.of();
-        recherche.setText("");
-        choisirOnglet(false);
-        chercher("");
+        messageResultats = "<html><center>Cherche un titre ou un artiste sur Jamendo,<br>"
+                         + "choisis son genre, puis clique sur + pour l'ajouter.</center></html>";
+        genreFiltre = "";
+        filtreArtistes = 0;
+        idAConfirmer = null;
+        choisirOnglet(menu.get(0));
 
-        Tache.lancer(() -> BaseDonnees.favoris(u.id()), charges -> {
+        Tache.lancer(Catalogue::charger, charge -> {
             if (utilisateur != u) return;
-            favoris.addAll(charges);
-            charges.forEach(m -> idsFavoris.add(m.id));
+            catalogue = charge;
+            rafraichirListe();
+        }, ex -> {
+            if (utilisateur != u) return;
+            messageCatalogue = "<html><center>Impossible de charger le catalogue.<br>"
+                             + "Vérifie la base de données et la connexion.</center></html>";
+            rafraichirListe();
+        });
+
+        if (!avecFavoris) return;
+        Tache.lancer(() -> new DonneesAuditeur(BaseDonnees.favoris(u.id()),
+                BaseDonnees.artistesFavoris(u.id()), BaseDonnees.abonnements(u.id())), d -> {
+            if (utilisateur != u) return;
+            favoris.addAll(d.favoris());
+            d.favoris().forEach(m -> idsFavoris.add(m.id));
+            artistesFavoris.addAll(d.artistesFavoris());
+            abonnements.addAll(d.abonnements());
             majBoutonFavori();
             rafraichirListe();
         }, ex -> {
@@ -286,61 +429,97 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
         afficherMorceauEnCours();
     }
 
-    // ------------------------------------------------------------------ recherche et onglets
+    // ------------------------------------------------------------------ onglets et filtres
 
-    private void choisirOnglet(boolean favorisChoisis) {
-        boolean change = surFavoris != favorisChoisis;
-        surFavoris = favorisChoisis;
-        ongletDecouvrir.setSelectionne(!surFavoris);
-        ongletFavoris.setSelectionne(surFavoris);
-        recherche.setPlaceholder(surFavoris ? "Filtrer mes favoris" : "Rechercher un titre, un artiste...");
-        if (change) recherche.setText("");
+    private void choisirOnglet(Onglet choisi) {
+        onglet = choisi;
+        idAConfirmer = null;
+        boutonsOnglets.forEach((o, b) -> b.setSelectionne(o == onglet));
+        recherche.setPlaceholder(switch (onglet) {
+            case CATALOGUE -> "Filtrer le catalogue";
+            case FAVORIS   -> "Filtrer mes favoris";
+            case ARTISTES  -> "Filtrer les artistes";
+            case GESTION   -> "Rechercher sur Jamendo puis Entrée";
+        });
+        recherche.setText("");
+
+        String filtres = switch (onglet) {
+            case CATALOGUE -> "GENRES";
+            case GESTION   -> "AJOUT";
+            case ARTISTES  -> "ARTISTES";
+            case FAVORIS   -> null;
+        };
+        int hauteur = onglet == Onglet.ARTISTES ? 25 : 56;   // une ou deux lignes de puces
+        zoneFiltres.setVisible(filtres != null);
+        zoneFiltres.setPreferredSize(new Dimension(10, hauteur));
+        zoneFiltres.setMaximumSize(new Dimension(Integer.MAX_VALUE, hauteur));
+        if (filtres != null) cartesFiltres.show(zoneFiltres, filtres);
+        majPuces();
+        revalidate();
         rafraichirListe();
     }
 
-    // Texte vide = titres populaires de la semaine
-    private void chercher(String texte) {
-        int numero = ++numeroRecherche;
-        resultats = List.of();
-        messageResultats = texte.isEmpty() ? "Chargement des titres du moment..." : "Recherche en cours...";
-        if (!surFavoris) rafraichirListe();
-
-        Tache.lancer(() -> texte.isEmpty() ? Jamendo.tendances() : Jamendo.rechercher(texte), trouves -> {
-            if (numero != numeroRecherche) return;
-            resultats = trouves;
-            messageResultats = texte.isEmpty() ? "Aucun titre à proposer pour le moment"
-                                               : "Aucun résultat pour « " + texte + " »";
-            if (!surFavoris) rafraichirListe();
-        }, ex -> {
-            if (numero != numeroRecherche) return;
-            messageResultats = "<html><center>Impossible de joindre Jamendo.<br>Vérifie ta connexion puis réessaie.</center></html>";
-            if (!surFavoris) rafraichirListe();
-        });
+    private void choisirGenre(String genre) {
+        genreFiltre = genre;
+        majPuces();
+        rafraichirListe();
     }
 
-    // Remplit la liste selon l'onglet actif (et le filtre pour les favoris)
-    private void rafraichirListe() {
-        List<Morceau> contenu;
-        String siVide;
-        if (surFavoris) {
-            String filtre = recherche.getText().trim().toLowerCase(Locale.ROOT);
-            contenu = favoris.stream()
-                .filter(m -> filtre.isEmpty()
-                    || m.titre.toLowerCase(Locale.ROOT).contains(filtre)
-                    || m.artiste.toLowerCase(Locale.ROOT).contains(filtre))
-                .toList();
-            if (!favorisDisponibles) {
-                siVide = "<html><center>Favoris indisponibles.<br>Vérifie la base de données (sql/schema.sql).</center></html>";
-            } else if (favoris.isEmpty()) {
-                siVide = "<html><center>Aucun favori pour l'instant.<br>Clique sur le coeur d'un titre pour l'ajouter.</center></html>";
-            } else {
-                siVide = "Aucun favori ne correspond";
-            }
-        } else {
-            contenu = resultats;
-            siVide = messageResultats;
-        }
+    private void choisirGenreAjout(String genre) {
+        genreAjout = genre;
+        majPuces();
+    }
 
+    private void choisirFiltreArtistes(int indice) {
+        filtreArtistes = indice;
+        majPuces();
+        rafraichirListe();
+    }
+
+    private void majPuces() {
+        pucesGenres.forEach((g, b) -> b.setSelectionne(g.equals(genreFiltre)));
+        pucesGenreAjout.forEach((g, b) -> b.setSelectionne(g.equals(genreAjout)));
+        for (int i = 0; i < pucesArtistes.size(); i++) pucesArtistes.get(i).setSelectionne(i == filtreArtistes);
+    }
+
+    // Remplit la liste selon l'onglet actif et les filtres
+    private void rafraichirListe() {
+        String filtre = recherche.getText().trim().toLowerCase(Locale.ROOT);
+        switch (onglet) {
+            case CATALOGUE -> {
+                if (catalogue == null) {
+                    afficherMorceaux(List.of(), messageCatalogue);
+                    return;
+                }
+                List<Morceau> base = genreFiltre.isEmpty() ? catalogue.tous() : catalogue.duGenre(genreFiltre);
+                afficherMorceaux(filtrer(base, filtre),
+                    catalogue.taille() == 0 ? "Le catalogue est vide" : "Aucun morceau ne correspond");
+            }
+            case FAVORIS -> {
+                String siVide;
+                if (!favorisDisponibles) {
+                    siVide = "<html><center>Favoris indisponibles.<br>Vérifie la base de données (sql/schema.sql).</center></html>";
+                } else if (favoris.isEmpty()) {
+                    siVide = "<html><center>Aucun favori pour l'instant.<br>Clique sur le coeur d'un titre pour l'ajouter.</center></html>";
+                } else {
+                    siVide = "Aucun favori ne correspond";
+                }
+                afficherMorceaux(filtrer(favoris, filtre), siVide);
+            }
+            case ARTISTES -> afficherArtistes(filtre);
+            case GESTION -> afficherMorceaux(resultats, messageResultats);
+        }
+    }
+
+    private static List<Morceau> filtrer(List<Morceau> morceaux, String filtre) {
+        if (filtre.isEmpty()) return morceaux;
+        return morceaux.stream()
+            .filter(m -> m.titre.toLowerCase(Locale.ROOT).contains(filtre)
+                      || m.artiste.toLowerCase(Locale.ROOT).contains(filtre))
+            .toList();
+    }
+
+    private void afficherMorceaux(List<Morceau> contenu, String siVide) {
         Morceau selection = liste.getSelectedValue();
         modele.clear();
         modele.addAll(contenu);
@@ -353,11 +532,130 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
         cartesCentre.show(centre, contenu.isEmpty() ? "MESSAGE" : "LISTE");
     }
 
-    // ------------------------------------------------------------------ favoris
+    private void afficherArtistes(String filtre) {
+        if (catalogue == null) {
+            message.setText(messageCatalogue);
+            cartesCentre.show(centre, "MESSAGE");
+            return;
+        }
+        titresParArtiste = catalogue.artistes();
+        List<String> noms = titresParArtiste.keySet().stream()
+            .filter(a -> filtre.isEmpty() || a.toLowerCase(Locale.ROOT).contains(filtre))
+            .filter(a -> filtreArtistes == 0
+                      || (filtreArtistes == 1 && artistesFavoris.contains(a))
+                      || (filtreArtistes == 2 && abonnements.contains(a)))
+            .toList();
+        String selection = listeArtistes.getSelectedValue();
+        modeleArtistes.clear();
+        modeleArtistes.addAll(noms);
+        if (selection != null) listeArtistes.setSelectedValue(selection, false);
+
+        if (!filtre.isEmpty() || filtreArtistes == 0) {
+            message.setText("Aucun artiste ne correspond");
+        } else if (filtreArtistes == 1) {
+            message.setText("<html><center>Aucun artiste favori pour l'instant.<br>Clique sur le coeur d'un artiste pour l'ajouter.</center></html>");
+        } else {
+            message.setText("<html><center>Aucun abonnement pour l'instant.<br>Clique sur « S'abonner » à côté d'un artiste.</center></html>");
+        }
+        cartesCentre.show(centre, noms.isEmpty() ? "MESSAGE" : "ARTISTES");
+    }
+
+    // Affiche les morceaux d'un artiste dans le catalogue
+    private void voirArtiste(String artiste) {
+        genreFiltre = "";
+        choisirOnglet(Onglet.CATALOGUE);
+        recherche.setText(artiste);
+    }
+
+    // ------------------------------------------------------------------ action à droite de chaque morceau
+
+    private RenduMorceau.Action actionDe(Morceau m) {
+        if (avecFavoris) {
+            return idsFavoris.contains(m.id) ? RenduMorceau.Action.FAVORI : RenduMorceau.Action.NON_FAVORI;
+        }
+        if (catalogue == null) return RenduMorceau.Action.AUCUNE;
+        if (onglet == Onglet.GESTION) {
+            return catalogue.contient(m.id) ? RenduMorceau.Action.DEJA_PRESENT : RenduMorceau.Action.AJOUTER;
+        }
+        return m.id.equals(idAConfirmer) ? RenduMorceau.Action.CONFIRMER : RenduMorceau.Action.SUPPRIMER;
+    }
+
+    private void executerAction(Morceau m) {
+        switch (actionDe(m)) {
+            case FAVORI, NON_FAVORI -> basculerFavori(m);
+            case AJOUTER -> ajouterAuCatalogue(m.avecGenre(genreAjout));
+            case SUPPRIMER -> {            // premier clic : la croix passe au rouge
+                idAConfirmer = m.id;
+                liste.repaint();
+            }
+            case CONFIRMER -> supprimerDuCatalogue(m);   // second clic : suppression
+            default -> { }
+        }
+    }
+
+    private void annulerConfirmation() {
+        if (idAConfirmer != null) {
+            idAConfirmer = null;
+            liste.repaint();
+        }
+    }
+
+    // ------------------------------------------------------------------ gestion du catalogue (admin)
+
+    // Texte vide = titres populaires de la semaine
+    private void chercherSurJamendo(String texte) {
+        int numero = ++numeroRecherche;
+        resultats = List.of();
+        messageResultats = "Recherche en cours...";
+        rafraichirListe();
+
+        Tache.lancer(() -> texte.isEmpty() ? Jamendo.tendances() : Jamendo.rechercher(texte), trouves -> {
+            if (numero != numeroRecherche) return;
+            resultats = trouves;
+            messageResultats = texte.isEmpty() ? "Aucun titre à proposer pour le moment"
+                                               : "Aucun résultat pour « " + texte + " »";
+            if (onglet == Onglet.GESTION) rafraichirListe();
+        }, ex -> {
+            if (numero != numeroRecherche) return;
+            messageResultats = "<html><center>Impossible de joindre Jamendo.<br>Vérifie ta connexion puis réessaie.</center></html>";
+            if (onglet == Onglet.GESTION) rafraichirListe();
+        });
+    }
+
+    private void ajouterAuCatalogue(Morceau m) {
+        Utilisateur u = utilisateur;
+        if (!catalogue.ajouter(m)) return;
+        liste.repaint();
+        Tache.lancer(() -> { BaseDonnees.ajouterMorceau(m); return null; }, ok -> { }, ex -> {
+            if (utilisateur != u) return;
+            catalogue.supprimer(m.id);   // on annule : l'enregistrement a échoué
+            liste.repaint();
+            alerter("Impossible d'ajouter le morceau (base de données injoignable).");
+        });
+    }
+
+    private void supprimerDuCatalogue(Morceau m) {
+        Utilisateur u = utilisateur;
+        idAConfirmer = null;
+        if (!catalogue.supprimer(m.id)) return;
+        rafraichirListe();
+        Tache.lancer(() -> { BaseDonnees.supprimerMorceau(m.id); return null; }, ok -> { }, ex -> {
+            if (utilisateur != u) return;
+            catalogue.ajouter(m);
+            rafraichirListe();
+            alerter("Impossible de supprimer le morceau (base de données injoignable).");
+        });
+    }
+
+    private void alerter(String texte) {
+        JOptionPane.showMessageDialog(this, texte, "Lecteur musique", JOptionPane.WARNING_MESSAGE);
+    }
+
+    // ------------------------------------------------------------------ favoris et abonnements (auditeur)
 
     private void basculerFavori(Morceau m) {
         Utilisateur u = utilisateur;
-        if (u == null || !favorisDisponibles) return;
+        if (u == null || !avecFavoris || !favorisDisponibles) return;
         boolean ajout = !idsFavoris.contains(m.id);
         appliquerFavori(m, ajout);
 
@@ -367,8 +665,7 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
         }, ok -> { }, ex -> {
             if (utilisateur != u) return;
             appliquerFavori(m, !ajout);   // on annule : l'enregistrement a échoué
-            JOptionPane.showMessageDialog(this, "Impossible d'enregistrer le favori (base de données injoignable).",
-                "Favoris", JOptionPane.WARNING_MESSAGE);
+            alerter("Impossible d'enregistrer le favori (base de données injoignable).");
         });
     }
 
@@ -380,7 +677,7 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
             favoris.removeIf(f -> f.id.equals(m.id));
         }
         majBoutonFavori();
-        if (surFavoris) rafraichirListe(); else liste.repaint();
+        if (onglet == Onglet.FAVORIS) rafraichirListe(); else liste.repaint();
     }
 
     private void majBoutonFavori() {
@@ -390,10 +687,31 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
         boutonFavori.setToolTipText(favori ? "Retirer des favoris" : "Ajouter aux favoris");
     }
 
+    // favori = true : artiste favori ; false : abonnement
+    private void basculerArtiste(String artiste, boolean favori) {
+        Utilisateur u = utilisateur;
+        if (u == null || !favorisDisponibles) return;
+        Set<String> ensemble = favori ? artistesFavoris : abonnements;
+        boolean ajout = !ensemble.contains(artiste);
+        if (ajout) ensemble.add(artiste); else ensemble.remove(artiste);
+        rafraichirListe();
+
+        Tache.lancer(() -> {
+            if (favori) BaseDonnees.definirArtisteFavori(u.id(), artiste, ajout);
+            else BaseDonnees.definirAbonnement(u.id(), artiste, ajout);
+            return null;
+        }, ok -> { }, ex -> {
+            if (utilisateur != u) return;
+            if (ajout) ensemble.remove(artiste); else ensemble.add(artiste);
+            rafraichirListe();
+            alerter("Impossible d'enregistrer (base de données injoignable).");
+        });
+    }
+
     // ------------------------------------------------------------------ lecture
 
     private void jouerDepuisListe(int index) {
-        file = new ArrayList<>(java.util.Collections.list(modele.elements()));
+        file = new ArrayList<>(Collections.list(modele.elements()));
         jouerIndex(index);
     }
 
@@ -410,7 +728,7 @@ final class PageLecteur extends JPanel implements Lecteur.Ecouteur {
             jouerIndex(indexFile);
         } else if (enCours != null) {
             lecteur.basculer();
-        } else if (!modele.isEmpty()) {   // rien de chargé : on lance la sélection, sinon le premier titre
+        } else if (!modele.isEmpty() && liste.isShowing()) {   // rien de chargé : la sélection, sinon le premier titre
             jouerDepuisListe(Math.max(0, liste.getSelectedIndex()));
         }
     }

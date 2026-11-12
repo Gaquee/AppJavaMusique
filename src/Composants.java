@@ -5,7 +5,6 @@ import java.awt.event.MouseEvent;
 import java.awt.geom.Path2D;
 import java.awt.geom.RoundRectangle2D;
 import java.util.function.DoubleConsumer;
-import java.util.function.Predicate;
 
 
 // ===================== Bouton icône (lecture, suivant, favori...) =====================
@@ -251,95 +250,6 @@ class Curseur extends JComponent {
             g2.setColor(Theme.TEXTE);
             g2.fillOval(MARGE + rempli - 6, cy - 6, 12, 12);
         }
-        g2.dispose();
-    }
-}
-
-
-// ===================== Liste de morceaux =====================
-class ListeMorceaux extends JList<Morceau> {
-    public ListeMorceaux(ListModel<Morceau> modele) {
-        super(modele);
-        setOpaque(false);
-        setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        setFixedCellHeight(RenduMorceau.HAUTEUR);
-    }
-
-    // Les lignes prennent la largeur visible : les titres trop longs sont tronqués
-    // au lieu de pousser la durée et le coeur hors de l'écran.
-    @Override
-    public boolean getScrollableTracksViewportWidth() {
-        return true;
-    }
-
-    // Vrai si le point (dans la liste) tombe sur le coeur de la ligne
-    public boolean surCoeur(Point p) {
-        return p.x >= getWidth() - RenduMorceau.ZONE_COEUR;
-    }
-}
-
-
-// ===================== Ligne : pochette, titre + artiste, durée, coeur =====================
-class RenduMorceau extends JPanel implements ListCellRenderer<Morceau> {
-    static final int HAUTEUR = 52;
-    static final int ZONE_COEUR = 38;       // largeur cliquable à droite de la ligne
-    private static final int POCHETTE = 38;
-
-    private final JLabel pochette = new JLabel();
-    private final JLabel titre = Theme.label("", 13, false, Theme.TEXTE);
-    private final JLabel artiste = Theme.label("", 11, false, Theme.TEXTE_2);
-    private final JLabel duree = Theme.label("", 11, false, Theme.TEXTE_2);
-    private final Predicate<Morceau> estFavori;
-    private final Predicate<Morceau> estEnCours;
-    private boolean favori;
-
-    public RenduMorceau(Predicate<Morceau> estFavori, Predicate<Morceau> estEnCours) {
-        this.estFavori = estFavori;
-        this.estEnCours = estEnCours;
-        setLayout(new BorderLayout(10, 0));
-        setBackground(Theme.CHAMP);
-
-        JPanel textes = new JPanel(new GridLayout(2, 1));
-        textes.setOpaque(false);
-        textes.setBorder(BorderFactory.createEmptyBorder(3, 0, 3, 0));
-        textes.add(titre);
-        textes.add(artiste);
-
-        // Le coeur est peint dans la marge droite (voir paintComponent)
-        duree.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, ZONE_COEUR - 6));
-
-        add(pochette, BorderLayout.WEST);
-        add(textes, BorderLayout.CENTER);
-        add(duree, BorderLayout.EAST);
-    }
-
-    @Override
-    public Component getListCellRendererComponent(JList<? extends Morceau> liste, Morceau m,
-                                                  int index, boolean selectionne, boolean focus) {
-        titre.setText(m.titre);
-        titre.setForeground(estEnCours.test(m) ? Theme.ACCENT : Theme.TEXTE);
-        artiste.setText(m.artiste);
-        duree.setText(m.duree > 0 ? Morceau.formaterDuree(m.duree) : "");
-        pochette.setIcon(Images.pochette(m.image, POCHETTE, liste::repaint));
-        favori = estFavori.test(m);
-        setOpaque(selectionne);
-        if (selectionne) {   // barre or à gauche
-            setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, 3, 0, 0, Theme.ACCENT),
-                BorderFactory.createEmptyBorder(7, 5, 7, 6)));
-        } else {
-            setBorder(BorderFactory.createEmptyBorder(7, 8, 7, 6));
-        }
-        return this;
-    }
-
-    @Override
-    protected void paintComponent(Graphics g) {
-        super.paintComponent(g);
-        Graphics2D g2 = (Graphics2D) g.create();
-        int t = 15;
-        Theme.dessinerCoeur(g2, getWidth() - ZONE_COEUR + (ZONE_COEUR - t) / 2.0 - 2, (getHeight() - t) / 2.0, t,
-            favori, favori ? Theme.ACCENT : Theme.TEXTE_2);
         g2.dispose();
     }
 }

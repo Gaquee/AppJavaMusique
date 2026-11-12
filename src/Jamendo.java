@@ -35,12 +35,21 @@ final class Jamendo {
     private Jamendo() {}
 
     static List<Morceau> rechercher(String texte) throws IOException, InterruptedException {
-        return avecReprise("&search=" + URLEncoder.encode(texte, StandardCharsets.UTF_8));
+        return avecReprise("&limit=" + LIMITE + "&search=" + URLEncoder.encode(texte, StandardCharsets.UTF_8));
     }
 
     // Les titres les plus écoutés de la semaine
     static List<Morceau> tendances() throws IOException, InterruptedException {
-        return avecReprise("&order=popularity_week");
+        return avecReprise("&limit=" + LIMITE + "&order=popularity_week");
+    }
+
+    // Les morceaux les plus populaires d'un genre (étiquette Jamendo : rock, jazz...)
+    static List<Morceau> parGenre(String genre, int nombre) throws IOException, InterruptedException {
+        String parametres = "&order=popularity_total&limit=" + nombre
+                          + "&tags=" + URLEncoder.encode(genre, StandardCharsets.UTF_8);
+        List<Morceau> morceaux = new ArrayList<>();
+        for (Morceau m : avecReprise(parametres)) morceaux.add(m.avecGenre(genre));
+        return morceaux;
     }
 
     // Jamendo répond parfois « 0 résultat » à tort (environ une fois sur trois) :
@@ -56,7 +65,7 @@ final class Jamendo {
 
     private static List<Morceau> appeler(String parametres) throws IOException, InterruptedException {
         String url = BASE + "?client_id=" + URLEncoder.encode(Config.clientJamendo(), StandardCharsets.UTF_8)
-                   + "&format=json&limit=" + LIMITE + "&audioformat=mp32" + parametres;
+                   + "&format=json&audioformat=mp32" + parametres;
         HttpRequest req = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(15)).build();
         HttpResponse<String> rep = CLIENT.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (rep.statusCode() != 200) {
@@ -78,13 +87,20 @@ final class Jamendo {
             if (audio.isEmpty()) continue;   // morceau non diffusable
             morceaux.add(new Morceau(
                 m.optString("id"),
-                m.optString("name", "Sans titre"),
-                m.optString("artist_name", "Artiste inconnu"),
-                m.optString("album_name", ""),
+                texte(m.optString("name", "Sans titre")),
+                texte(m.optString("artist_name", "Artiste inconnu")),
+                texte(m.optString("album_name", "")),
+                "",
                 m.optInt("duration", 0),
                 audio,
                 m.optString("album_image", "")));
         }
         return morceaux;
+    }
+
+    // Jamendo renvoie certains noms avec des entités HTML (« AC &amp; DC »)
+    private static String texte(String brut) {
+        return brut.replace("&quot;", "\"").replace("&#039;", "'").replace("&#39;", "'")
+                   .replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").trim();
     }
 }
